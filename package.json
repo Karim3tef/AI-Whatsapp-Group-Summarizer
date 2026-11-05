@@ -1,0 +1,47 @@
+{
+  "name": "ai-whatsapp-group-summarizer",
+  "version": "1.0.0",
+  "description": "Self-hosted WhatsApp bot that watches the groups you choose and sends you AI summaries of what matters, with a secure REST API and signed webhooks to plug it into other projects.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "setup": "node scripts/setup.js",
+    "secret": "node scripts/generate-secret.js",
+    "test": "node --test test/*.test.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:logs": "pm2 logs ai-whatsapp-group-summarizer"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "whatsapp",
+    "whatsapp-web.js",
+    "bot",
+    "summarizer",
+    "ai",
+    "llm",
+    "groq",
+    "openrouter",
+    "ollama",
+    "arabic",
+    "rest-api",
+    "webhook"
+  ],
+  "author": "Karim Atef Alanany",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Karim3tef/AI-Whatsapp-Group-Summarizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Karim3tef/AI-Whatsapp-Group-Summarizer/issues"
+  },
+  "homepage": "https://github.com/Karim3tef/AI-Whatsapp-Group-Summarizer#readme",
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "node-cron": "^4.6.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}
