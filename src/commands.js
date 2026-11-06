@@ -29,6 +29,9 @@ function normalize(word) {
     .replace(/[ً-ْـ]/g, ''); // tashkeel and tatweel
 }
 
+// Zero-width and bidi control characters.
+const INVISIBLE = /[؜​-‏‪-‮⁦-⁩﻿]/g;
+
 const LOOKUP = new Map();
 for (const cmd of COMMANDS) for (const name of cmd.names) LOOKUP.set(normalize(name), cmd.key);
 
@@ -37,7 +40,8 @@ for (const cmd of COMMANDS) for (const name of cmd.names) LOOKUP.set(normalize(n
  * @param {string} text
  */
 function parseCommand(text) {
-  const trimmed = (text || '').trim();
+  // Arabic keyboards often add invisible direction marks (e.g. before "!").
+  const trimmed = (text || '').replace(INVISIBLE, '').trim();
   if (!trimmed.startsWith('!')) return null;
   const [word, ...rest] = trimmed.slice(1).split(/\s+/);
   const key = LOOKUP.get(normalize(word || ''));
@@ -212,4 +216,4 @@ function createCommandHandler(deps) {
   };
 }
 
-module.exports = { createCommandHandler, parseCommand, resolveChat, normalize, helpText, COMMANDS };
+module.exports = { createCommandHandler, parseCommand, resolveChat, normalize, helpText, COMMANDS, INVISIBLE };

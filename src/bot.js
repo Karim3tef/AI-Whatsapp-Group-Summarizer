@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -8,7 +10,7 @@ const cron = require('node-cron');
 const { createAIClient } = require('./ai');
 const { MessageStore, GroupStore, HistoryStore, SettingsStore } = require('./storage');
 const { createSummarizer } = require('./summarizer');
-const { createCommandHandler } = require('./commands');
+const { createCommandHandler, INVISIBLE } = require('./commands');
 const { createApiServer } = require('./api');
 const { createWebhook } = require('./webhook');
 const { createRealtimeWatcher } = require('./realtime');
@@ -33,6 +35,19 @@ function formatAlerts(alerts) {
   }
   const blocks = [...byGroup].map(([group, lines]) => `*${group}*\n${lines.join('\n')}`);
   return `🔔 *تنبيه مهم*\n\n${blocks.join('\n\n')}`;
+}
+
+/**
+ * Chromium leaves Singleton* lock files in its profile when it is killed.
+ * A new container has a new hostname, so Chromium then thinks another
+ * machine owns the profile and refuses to start. Only this process uses
+ * the session, so the locks are always stale here.
+ */
+function clearChromiumLocks(authDir) {
+  const profile = path.join(authDir, 'session');
+  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    fs.rmSync(path.join(profile, name), { force: true });
+  }
 }
 
 async function senderName(msg) {
@@ -145,8 +160,20 @@ function createBot(config, logger) {
 
   let task = null;
   const getNextRun = () => (task ? task.getNextRun() : null);
-  const listGroupChats = async () =>
-    (await client.getChats()).filter((c) => c.isGroup).map((c) => ({ id: c.id._serialized, name: c.name }));
+  // Read groups straight from WhatsApp Web's in-memory chat list.
+  // client.getChats() and msg.getChat() also fetch every group's members
+  // from the server, which can take minutes on big accounts and time out.
+  // `ids` limits the result to those group IDs.
+  const groupChats = (ids = null) =>
+    client.pupPage.evaluate((ids) => {
+      const { Chat } = window.require('WAWebCollections');
+      const { createWid } = window.require('WAWebWidFactory');
+      const chats = ids ? ids.map((id) => Chat.get(createWid(id))) : Chat.getModelsArray();
+      return chats
+        .filter((c) => c && c.id.server === 'g.us')
+        .map((c) => ({ id: c.id._serialized || c.id.toString(), name: c.formattedTitle || c.name || '' }));
+    }, ids);
+  const listGroupChats = () => groupChats();
 
   const handleCommand = createCommandHandler({
     send,
@@ -207,6 +234,7 @@ function createBot(config, logger) {
       logger.warn('Could not look up own LID:', err.message);
     }
     ready = true;
+    logger.info(`Commands are read from your "Message yourself" chat (${[...selfIds].join(', ')}).`);
 
     logger.info(
       `✅ WhatsApp connected. Mode: ${settings.get('mode')}. Watching ${groups.count} group(s), ${store.count} message(s) pending.`,
@@ -232,6 +260,13 @@ function createBot(config, logger) {
   client.on('disconnected', (reason) => {
     ready = false;
     logger.error('Disconnected from WhatsApp:', reason);
+    if (reason === 'LOGOUT') {
+      // The library deletes the dead session only after this event, but we
+      // exit right away, so delete it here. Otherwise every restart loads the
+      // same logged-out session and fails again.
+      fs.rmSync(path.join(config.authDir, 'session'), { recursive: true, force: true });
+      logger.warn('WhatsApp session removed. Restarting; scan the new QR code to link again.');
+    }
     // Exit so pm2 / Docker restarts the process with a clean browser.
     process.exit(1);
   });
@@ -239,10 +274,11 @@ function createBot(config, logger) {
   // Messages from other people. Store the ones from watched groups.
   client.on('message', async (msg) => {
     try {
-      const chat = await msg.getChat();
-      if (!chat.isGroup) return;
-      const info = { id: chat.id._serialized, name: chat.name };
-      if (!groups.matches(info)) return;
+      // In a group message, `from` is the group and `author` the sender.
+      if (!msg.from || !msg.from.endsWith('@g.us')) return;
+      const [info] = await groupChats([msg.from]);
+      if (!info || !groups.matches(info)) return;
+      const chat = info;
 
       const text = messageText(msg);
       if (!text) return;
@@ -265,17 +301,33 @@ function createBot(config, logger) {
         await notifier.notify(`🔔 *${chat.name}*\n${from}: ${text}`);
       }
     } catch (err) {
-      logger.error('Could not store message:', err.message);
+      logger.error('Could not store message:', err.stack || err.message);
     }
   });
 
   // Messages the user sends. Only those in "Message yourself" can be commands.
   client.on('message_create', async (msg) => {
-    if (!ready || !msg.fromMe || !selfIds.has(msg.to)) return;
+    if (!ready || !msg.fromMe) return;
+    // In "Message yourself" the message goes from you to you.
+    const toSelf = selfIds.has(msg.to) || msg.to === msg.from;
+    if (!toSelf) {
+      // Say why a command was ignored, so a changed self ID is easy to spot.
+      if ((msg.body || '').trim().startsWith('!')) {
+        logger.warn(`Ignored "${msg.body.trim().slice(0, 30)}": sent to ${msg.to}, not to yourself (${[...selfIds].join(', ')}).`);
+      }
+      return;
+    }
+    const body = (msg.body || '').replace(INVISIBLE, '').trim();
+    if (!body.startsWith('!')) return;
     try {
-      await handleCommand(msg.body);
+      logger.info(`Command received: ${body.slice(0, 40)}`);
+      const known = await handleCommand(body);
+      if (!known) {
+        logger.warn(`Unknown command: ${body.slice(0, 40)}`);
+        await send('❓ أمر مش معروف. ابعت *!مساعدة* عشان تشوف الأوامر.');
+      }
     } catch (err) {
-      logger.error('Command failed:', err.message);
+      logger.error('Command failed:', err.stack || err.message);
       try {
         await send(`⚠️ الأمر فشل: ${err.message.slice(0, 300)}`);
       } catch {
@@ -288,6 +340,7 @@ function createBot(config, logger) {
     client,
     async start() {
       if (api) await api.listen();
+      clearChromiumLocks(config.authDir);
       await client.initialize();
     },
     async stop() {
@@ -304,4 +357,4 @@ function createBot(config, logger) {
   };
 }
 
-module.exports = { createBot, messageText, formatAlerts };
+module.exports = { createBot, messageText, formatAlerts, clearChromiumLocks };

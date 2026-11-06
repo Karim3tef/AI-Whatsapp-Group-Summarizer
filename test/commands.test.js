@@ -45,6 +45,8 @@ test('parseCommand accepts Arabic, English and letter variants', () => {
   assert.equal(parseCommand('!الغاء 2').args, '2');
   assert.equal(parseCommand('!اوامر').key, 'help');
   assert.equal(parseCommand('!حاله').key, 'status');
+  assert.equal(parseCommand('‏!جروبات').key, 'groups');
+  assert.equal(parseCommand('!‏تابع‎ 3').args, '3');
   assert.equal(parseCommand('ملخص'), null);
   assert.equal(parseCommand('!unknown'), null);
   assert.equal(parseCommand(undefined), null);
